@@ -12,11 +12,11 @@
     <orderEntry type="module-library">
       <library>
         <CLASSES>
-          <root url="jar://$MODULE_DIR$/lib/graphql-java-2.0.0.jar!/" />
+          <root url="jar://$MODULE_DIR$/lib/graphql-java-2.3.0.jar!/" />
         </CLASSES>
         <JAVADOC />
         <SOURCES>
-          <root url="jar://$MODULE_DIR$/lib/graphql-java-2.0.0.zip!/graphql-java-2.0.0/src/main/java" />
+          <root url="jar://$MODULE_DIR$/lib/graphql-java-2.3.0.zip!/graphql-java-2.3.0/src/main/java" />
         </SOURCES>
       </library>
     </orderEntry>

@@ -1,0 +1,10 @@
+configurations {
+    // included in api
+    all*.exclude group: 'org.slf4j', module: 'slf4j-api'
+}
+
+dependencies {
+    // includes antlr4-runtime
+    external 'com.graphql-java:graphql-java:2.3.0'
+}
+
