@@ -1,0 +1,28 @@
+pom.xml
+pom.xml.asc
+*jar
+/classes/
+/target/
+/checkouts/
+.lein-deps-sum
+.lein-repl-history
+.lein-plugins/
+.lein-failures
+.nrepl-port
+figwheel_server.log
+npm-debug.log
+
+# generated artifacts
+resources/config/module.properties
+resources/web/graphql/gen
+.client-compile.timestamp
+.dependencies.timestamp
+
+node_modules
+
+# tsd places *.d.ts files in here
+/typings/
+
+#Gradle
+.gradle
+resources/config/dependencies.txt

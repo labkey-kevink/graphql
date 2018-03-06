@@ -30,6 +30,10 @@ import graphql.schema.GraphQLOutputType;
 import graphql.schema.GraphQLSchema;
 import graphql.schema.GraphQLType;
 import graphql.schema.GraphQLTypeReference;
+import graphql.schema.PropertyDataFetcher;
+import org.apache.commons.lang3.StringUtils;
+import org.jetbrains.annotations.NotNull;
+import org.jetbrains.annotations.Nullable;
 import org.labkey.api.action.ApiAction;
 import org.labkey.api.action.Marshal;
 import org.labkey.api.action.Marshaller;
@@ -42,7 +46,9 @@ import org.labkey.api.data.Container;
 import org.labkey.api.data.ForeignKey;
 import org.labkey.api.data.JdbcType;
 import org.labkey.api.data.MultiValuedForeignKey;
+import org.labkey.api.data.SQLFragment;
 import org.labkey.api.data.SimpleFilter;
+import org.labkey.api.data.SqlSelector;
 import org.labkey.api.data.TableInfo;
 import org.labkey.api.data.TableSelector;
 import org.labkey.api.query.QueryService;
@@ -59,6 +65,7 @@ import org.labkey.api.view.NotFoundException;
 import org.springframework.validation.BindException;
 import org.springframework.web.servlet.ModelAndView;
 
+import java.beans.Introspector;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.HashSet;
@@ -77,6 +84,7 @@ import static graphql.schema.GraphQLArgument.newArgument;
 import static graphql.schema.GraphQLFieldDefinition.newFieldDefinition;
 import static graphql.schema.GraphQLInterfaceType.newInterface;
 import static graphql.schema.GraphQLObjectType.newObject;
+import static graphql.schema.GraphQLTypeReference.typeRef;
 
 @Marshal(Marshaller.Jackson)
 public class GraphQLController extends SpringActionController
@@ -205,8 +213,11 @@ public class GraphQLController extends SpringActionController
      *   In addition, it can refer to the query by id so save transmitting query string.
      *
      * - Consider building the query type-system once -- not dynamically per-request
+     *   http://graphql-java.readthedocs.io/en/v7/execution.html#query-caching
      *
      * - May want to try using some form of derivation.  e.g., exp.Data table could be a base type and each DataClass could be a derived type.
+     *   unfortunately interfaces cannot derive from other interfaces to build a type hierarchy yet:
+     *   https://github.com/facebook/graphql/issues/295
      *
      * - Coalesce/batch expensive queries -- eg., if there is a "Outputs" query field on a DataClass type and the
      *   outer query selects more than one DataClass row, we could issue a single lineage query to get the
@@ -262,6 +273,15 @@ public class GraphQLController extends SpringActionController
      *                  Container { Name, EntityId },
      *                  clonal
      *              } }"
+     *      }
+     *  });
+     *
+     *  LABKEY.Ajax.request({
+     *      url: LABKEY.ActionURL.buildURL('graphql', 'query.api'),
+     *      jsonData: {
+     *          schemaName: 'exp.data',
+     *          queryName: 'ExpressionSystem',
+     *          q: '{ ExpressionSystem(RowId: 402) { Name, RowId, Alias, HostCellLineId { Name, RowId, Alias }, Constructs { Name, RowId, Alias }, IntendedMolecules { Name, RowId } } }'
      *      }
      *  });
      *
@@ -350,20 +370,6 @@ public class GraphQLController extends SpringActionController
         );
 
 
-        types.add(newInterface()
-                .name("HasLinks")
-                .description("A collection of links")
-                .field(createLinksField(null))
-                .typeResolver(object -> {
-                    // i dunno -- just assume the row has links?
-                    if (object != null)
-                        return GraphQLObjectType.reference("HasLinks"); // TODO: I think we need a concrete type here, not an interface
-
-                    return null;
-                })
-                .build()
-        );
-
         return GraphQLSchema
                 .newSchema()
                 .query(createQueryObject(table, types))
@@ -428,7 +434,7 @@ public class GraphQLController extends SpringActionController
     {
         return newObject()
                 .name(nameOverride == null ? table.getName() : nameOverride)
-                .withInterface(GraphQLInterfaceType.reference("HasLinks"))
+                //.withInterface(typeRef("HasLinks"))
                 .description(table.getDescription())
                 .fields(createFields(table.getColumns(), types))
                 .field(createLinksField(table))
@@ -471,6 +477,7 @@ public class GraphQLController extends SpringActionController
                 .build();
     }
 
+    // TODO: look into using GraphqlFieldVisibility to hide restricted fields
     public static List<GraphQLFieldDefinition> createFields(List<ColumnInfo> columns, Set<GraphQLType> types)
     {
         return columns.stream()
@@ -564,13 +571,13 @@ public class GraphQLController extends SpringActionController
 //            }
             else if (fk instanceof UserIdForeignKey)
             {
-                type = new GraphQLTypeReference("core__Users");
+                type = typeRef("core__Users");
             }
             else
             {
                 GraphQLType fkType = ensureType(fk, types);
                 if (fkType != null)
-                    type = new GraphQLTypeReference(fkType.getName());
+                    type = typeRef(fkType.getName());
             }
         }
 
@@ -589,6 +596,7 @@ public class GraphQLController extends SpringActionController
     }
 
     // Create the GraphQLType for the foreign key if it hasn't yet been added to the types collection
+    // Type names follow the pattern "<schema_name>__<query_name>":  e.g. exp.data.Construct becomes exp_data__Construct
     public static GraphQLType ensureType(ForeignKey fk, Set<GraphQLType> types)
     {
         // Only create GraphQLType for lookups in the public schema
@@ -630,52 +638,67 @@ public class GraphQLController extends SpringActionController
     {
         final ForeignKey fk = column.getFk();
         if (fk == null || fk instanceof RowIdForeignKey)
-            return null; // use the default PropertyDataFetcher
+            return PropertyDataFetcher.fetching(column.getName()); // getFieldKey() ?
 
         //TODO: column.getDefaultValue()
 
-        return new DataFetcher()
-        {
-            @Override
-            public Object get(DataFetchingEnvironment env)
+        return env -> {
+            Map<String, Object> row = (Map<String, Object>)env.getSource();
+            Object value = row.get(column.getName());
+            if (value == null)
+                return null;
+
+            //Container lookupContainer = fk.getLookupContainer()
+            if (fk instanceof MultiValuedForeignKey)
             {
-                Map<String, Object> row = (Map<String, Object>)env.getSource();
-                Object value = row.get(column.getName());
-                if (value == null)
-                    return null;
+                // TODO: need a flag or something to indicate we want to select a map versus just a lookup value
+                String selectValueColumn = null;
+                if (column.getName().equalsIgnoreCase("Alias"))
+                    selectValueColumn = "~~title~~";
 
-                //Container lookupContainer = fk.getLookupContainer()
-                if (fk instanceof MultiValuedForeignKey)
-                {
-//                    MultiValuedForeignKey mvfk = (MultiValuedForeignKey)fk;
-//                    String junctionLookupColumn = mvfk.getJunctionLookup(); // column on junctionTable that has an FK to the value table
-//                    String junctionTableName = mvfk.getLookupTableName();
-//                    String junctionKey = mvfk.getLookupColumnName();
-//
-//                    ColumnInfo lookupColumn = fk.createLookupColumn(column, null);
-//                    //TableInfo junctionTable = lookupColumn.getParentTable(); // not right
-//
-//                    TableInfo valueTable = mvfk.getLookupTableInfo(); // far right table
-//
-//                    SimpleFilter filter = new SimpleFilter();
-//                    filter.addWhereClause(
-//                            lookupColumn.getSelectName() + " IN (SELECT " + junctionLookupColumn + " FROM " + junctionTable.getFromSQL("q") + " WHERE " + junctionKey + " = ?", new Object[] { value }, null);
-//                    TableSelector ts = new TableSelector(valueTable, filter, null);
-//                    return ts.getMapCollection();
-                    return Arrays.asList(
-                            CaseInsensitiveHashMap.of("name", "bob"),
-                            CaseInsensitiveHashMap.of("name", "sally")
-                    );
-                }
-                else
-                {
-                    TableInfo lookupTable = fk.getLookupTableInfo();
-                    ColumnInfo lookupColumn = lookupTable.getColumn(fk.getLookupColumnName());
+                return createMultiValuedFetcher(column, (MultiValuedForeignKey)fk, value, selectValueColumn);
+            }
+            else
+            {
+                TableInfo lookupTable = fk.getLookupTableInfo();
+                ColumnInfo lookupColumn = lookupTable.getColumn(fk.getLookupColumnName());
 
-                    TableSelector ts = new TableSelector(lookupTable, new SimpleFilter(lookupColumn.getName(), value), null);
-                    return ts.getMap();
-                }
+                TableSelector ts = new TableSelector(lookupTable, new SimpleFilter(lookupColumn.getName(), value), null);
+                return ts.getMap();
             }
         };
     }
+
+    public static Object createMultiValuedFetcher(@NotNull ColumnInfo column, @NotNull MultiValuedForeignKey mvfk, @NotNull Object value, @Nullable String selectValueColumn)
+    {
+        String junctionLookupColumn = mvfk.getJunctionLookup(); // column on junctionTable that has an FK to the value table
+        String junctionKey = mvfk.getLookupColumnName();
+
+        TableInfo valueTable = mvfk.getLookupTableInfo(); // far right table
+
+        TableInfo junctionTable = mvfk.getSourceFk().getLookupTableInfo(); // junction table in the middle
+        ColumnInfo junctCol = junctionTable.getColumn(junctionLookupColumn);
+        ForeignKey valueFk = junctCol.getFk();
+
+        if ("~~title~~".equals(selectValueColumn))
+            selectValueColumn = valueTable.getTitleColumn();
+
+        SQLFragment frag = new SQLFragment("SELECT");
+        if (selectValueColumn != null)
+            frag.append(" v.").append(selectValueColumn);
+        else
+            frag.append(" v.* ");
+        frag.append(" FROM ").append(valueTable, "v")
+                .append(" INNER JOIN ").append( junctionTable, "j")
+                .append(" ON v.").append(valueFk.getLookupColumnName()).append(" = ").append(junctionLookupColumn)
+                .append(" WHERE j.").append( junctionKey).append( " = ?").add(value);
+
+        SqlSelector ss = new SqlSelector(valueTable.getSchema(), frag);
+
+        if (selectValueColumn != null)
+            return ss.getCollection(column.getJavaClass());
+        else
+            return ss.getMapCollection();
+    }
+
 }

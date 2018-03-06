@@ -1,0 +1,2 @@
+# direct external dependencies for project :server:optionalModules:graphql
+graphql-java-7.0.jar

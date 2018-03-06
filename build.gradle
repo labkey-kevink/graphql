@@ -5,6 +5,13 @@ configurations {
 
 dependencies {
     // includes antlr4-runtime
-    external 'com.graphql-java:graphql-java:2.3.0'
+    external 'com.graphql-java:graphql-java:7.0'
 }
 
+sourceSets {
+   main {
+      java {
+         srcDirs = ['src/java']
+      }
+   }
+}
