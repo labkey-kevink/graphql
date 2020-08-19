@@ -105,9 +105,8 @@ public class GraphQLController extends SpringActionController
             return new JspView("/org/labkey/graphql/view/hello.jsp");
         }
 
-        public NavTree appendNavTrail(NavTree root)
+        public void addNavTrail(NavTree root)
         {
-            return root;
         }
     }
 
